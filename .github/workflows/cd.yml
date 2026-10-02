@@ -1,0 +1,133 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  checks: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+env:
+  # Must be lowercase: Docker image references reject uppercase characters.
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/devopsa1
+
+jobs:
+  build-image:
+    name: Build Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=staging
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  test-image:
+    name: Test Image
+    runs-on: ubuntu-latest
+    needs: build-image
+    steps:
+      - name: Pull the image published by the previous job
+        run: docker pull $IMAGE_NAME:staging
+      - name: Run the container and probe it
+        run: |
+          docker run -d --name devshop -p 3000:3000 $IMAGE_NAME:staging
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/api/health; then
+              echo ""
+              echo "image is healthy"
+              docker rm -f devshop
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs devshop
+          docker rm -f devshop
+          exit 1
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: test-image
+    environment:
+      name: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the staging container
+        run: |
+          docker run -d --name devshop-staging -p 3000:3000 $IMAGE_NAME:staging
+      - name: Post-deploy health probe
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/api/health; then
+              echo ""
+              echo "staging deployment healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "staging deployment failed the health probe"
+          docker logs devshop-staging
+          exit 1
+      - name: Smoke test deployed endpoints
+        run: |
+          curl -fsS "http://localhost:3000/api/products" | head -c 200
+          echo ""
+          curl -fsS -X POST http://localhost:3000/api/cart/items \
+            -H "content-type: application/json" \
+            -H "x-session-id: cd-smoke" \
+            -d '{"productId":"P-1001","qty":1}' | head -c 200
+          echo ""
+      - name: Tear down staging container
+        if: always()
+        run: docker rm -f devshop-staging || true
+
+  release:
+    name: Package Release
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: dist/
+          retention-days: 30
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: devshop 1.0.0
+          body: Automated release produced by the CD pipeline on merge to main.
+          files: dist/*
