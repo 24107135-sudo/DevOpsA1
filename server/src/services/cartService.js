@@ -4,8 +4,6 @@ const { getProductById } = require('../data/products');
 
 const MAX_QTY_PER_LINE = 10;
 const FREE_SHIPPING_THRESHOLD = 999;
-const BASE_SHIPPING_CHARGE = 79;
-const FREE_SHIPPING_THRESHOLD = 999;
 const BASE_SHIPPING_CHARGE = 49;
 
 /** Per-session cart kept in memory. sessionId -> { items: [] } */
