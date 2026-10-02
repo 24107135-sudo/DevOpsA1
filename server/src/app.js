@@ -18,7 +18,7 @@ function app() {
   const sessionId = (req) => req.get(SESSION_HEADER) || req.ip || 'anonymous';
 
   api.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', service: 'DevShop', uptime: process.uptime() });
+    res.json({ status: 'ok', service: 'shopverse', uptime: process.uptime() });
   });
 
   api.get('/api/products', (req, res) => {
